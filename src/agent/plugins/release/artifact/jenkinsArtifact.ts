@@ -4,24 +4,26 @@
 import releaseIfm = require('vso-node-api/interfaces/ReleaseManagementInterfaces');
 import rmInterfaces = require('../api/interfaces');
 import agentifm = require('vso-node-api/interfaces/TaskAgentInterfaces');
-import context = require('../../../context');
+import common = require('../../../common');
 import ifm = require('../../../api/interfaces');
 import utilm = require('../../../utilities');
 import path = require('path');
 import baseifm = require('vso-node-api/interfaces/common/VsoBaseInterfaces');
 import fs = require('fs');
 import cm = require('../../../common');
+import Q = require('q');
 import releaseCommon = require('../lib/common');
-import webapim = require('vso-node-api/WebApi');
+import jenkinsapim = require('../api/jenkinsapi');
 var shell = require('shelljs');
 var zip = require('adm-zip');
 
 export class JenkinsArtifact implements rmInterfaces.IArtifact {
-    public download(context: context.JobContext, artifactDefinition: releaseIfm.AgentArtifactDefinition, artifactsFolder: string, asyncCallback): void {
+    public download(context: common.IExecutionContext, artifactDefinition: releaseIfm.AgentArtifactDefinition, artifactFolder: string): Q.Promise<void> {
+        var defer = Q.defer<void>();
         try {
             var jenkinsDetails: releaseIfm.AgentJenkinsArtifactDetails = JSON.parse(artifactDefinition.details, releaseCommon.reviver);
             var jenkinsEndpoint: agentifm.ServiceEndpoint;
-            context.job.environment.endpoints.some((endpoint: agentifm.ServiceEndpoint) => {
+            context.jobInfo.jobMessage.environment.endpoints.some((endpoint: agentifm.ServiceEndpoint) => {
                 if (endpoint.name === jenkinsDetails.connectionName) {
                     jenkinsEndpoint = endpoint;
                     return true;
@@ -29,50 +31,65 @@ export class JenkinsArtifact implements rmInterfaces.IArtifact {
             });
 
             if (jenkinsEndpoint === null) {
-                asyncCallback('Cannot find required information in the job to download the Jenkins artifact: ' + jenkinsDetails.connectionName);
+                defer.reject('Cannot find required information in the job to download the Jenkins artifact: ' + jenkinsDetails.connectionName);
+                return;
             }
 
-            var artifactDownloadFolder: string = path.join(artifactsFolder, artifactDefinition.name);
-            utilm.ensurePathExists(artifactDownloadFolder).then(() => {
-                context.info('Created artifact folder: ' + artifactDownloadFolder);
+            context.info('Created artifact folder: ' + artifactFolder);
 
-                var zipSource = path.join(artifactDownloadFolder, 'download.zip');
-                var fileStream: NodeJS.WritableStream = fs.createWriteStream(zipSource);
-                var creds: baseifm.IBasicCredentials = <baseifm.IBasicCredentials>{};
-                creds.username = this.getAuthParameter(jenkinsEndpoint, 'username');
-                creds.password = this.getAuthParameter(jenkinsEndpoint, 'password');
-                var jenkinsApi = new webapim.WebApi(jenkinsEndpoint.url, cm.basicHandlerFromCreds(creds)).getJenkinsApi();
-                jenkinsApi.getArtifactContentZip(jenkinsDetails.jobName, artifactDefinition.version.toString(), jenkinsDetails.relativePath, (err, statusCode, res) => {
-                    if (err) {
-                        context.info('Error downloading artifact: ' + artifactDefinition.name);
-                        asyncCallback(err);
-                    }
-                    else if (statusCode > 299) {
-                        asyncCallback("Failed Request: " + statusCode);
-                    }
-                    res.pipe(fileStream);
-                    fileStream.on('finish', function () {
-                        cm.extractFile(zipSource, artifactDownloadFolder, (err) => {
-                            if (err) {
-                                context.info('Error extracting artifact: ' + artifactDefinition.name);
-                                asyncCallback(err);
-                                return;
-                            }
-
-                            shell.mv('-f', path.join(path.join(artifactDownloadFolder, 'archive'), '*'), artifactDownloadFolder);
-                            shell.rm('-rf', zipSource, path.join(artifactDownloadFolder, 'archive'));
-                            fileStream.end();
-                            asyncCallback(err);
+            var zipSource = path.join(artifactFolder, 'download.zip');
+            var fileStream: NodeJS.WritableStream = fs.createWriteStream(zipSource);
+            var creds: baseifm.IBasicCredentials = <baseifm.IBasicCredentials>{};
+            creds.username = this.getAuthParameter(jenkinsEndpoint, 'username');
+            creds.password = this.getAuthParameter(jenkinsEndpoint, 'password');
+            var jenkinsApi = new jenkinsapim.JenkinsApi(jenkinsEndpoint.url, [cm.basicHandlerFromCreds(creds)]);
+            jenkinsApi.getArtifactContentZip(jenkinsDetails.jobName, artifactDefinition.version.toString(), jenkinsDetails.relativePath, (err, statusCode, res) => {
+                if (err) {
+                    context.info('Error downloading artifact: ' + artifactDefinition.name);
+                    defer.reject(err);
+                    return;
+                }
+                else if (statusCode > 299) {
+                    defer.reject("Failed Request: " + statusCode);
+                    return;
+                }
+                res.pipe(fileStream);
+                fileStream.on('finish', function () {
+                    cm.extractFile(zipSource, artifactFolder, (err) => {
+                        if (err) {
+                            context.info('Error extracting artifact: ' + artifactDefinition.name);
+                            defer.reject(err);
                             return;
-                        });
+                        }
+
+                        shell.mv('-f', path.join(path.join(artifactFolder, 'archive'), '*'), artifactFolder);
+                        var errorMessage = shell.error();
+                        if (errorMessage) {
+                            fileStream.end();
+                            defer.reject(errorMessage);
+                            return;
+                        }
+                        shell.rm('-rf', zipSource, path.join(artifactFolder, 'archive'));
+                        errorMessage = shell.error();
+                        if (errorMessage) {
+                            fileStream.end();
+                            defer.reject(errorMessage);
+                            return;
+                        }
+                        fileStream.end();
+                        defer.resolve(null);
+                        return;
                     });
                 });
             });
         }
         catch (error) {
             context.info('There was problem in downloading the artifact: ' + artifactDefinition.name);
-            asyncCallback(error);
+            defer.reject(error);
+            return;
         }
+
+        return defer.promise;
     }
 
     public getAuthParameter(endpoint: agentifm.ServiceEndpoint, paramName: string) {

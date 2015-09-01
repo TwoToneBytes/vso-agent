@@ -2,8 +2,9 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 import releaseIfm = require('vso-node-api/interfaces/ReleaseManagementInterfaces');
-import context = require('../../../context');
+import common = require('../../../common');
 import jenkinsArtifact = require('./jenkinsArtifact');
+import Q = require('q');
 import buildArtifact = require('./buildArtifact');
 
 
@@ -11,15 +12,17 @@ export class ArtifactResolver {
     constructor() {
     }
 
-    public download(context: context.JobContext, artifactDefinition: releaseIfm.AgentArtifactDefinition, artifactsFolder: string, asyncCallback): void {
+    public download(context: common.IExecutionContext, artifactDefinition: releaseIfm.AgentArtifactDefinition, artifactFolder: string): Q.Promise<void> {
         if (artifactDefinition.artifactType === releaseIfm.AgentArtifactType.Jenkins) {
-            new jenkinsArtifact.JenkinsArtifact().download(context, artifactDefinition, artifactsFolder, asyncCallback);
+            return new jenkinsArtifact.JenkinsArtifact().download(context, artifactDefinition, artifactFolder);
         }
         else if (artifactDefinition.artifactType === releaseIfm.AgentArtifactType.Build) {
-            new buildArtifact.BuildArtifact().download(context, artifactDefinition, artifactsFolder, asyncCallback);
+            return new buildArtifact.BuildArtifact().download(context, artifactDefinition, artifactFolder);
         }
         else {
-            asyncCallback('The artifact type is not yet supported: ' + artifactDefinition.artifactType);
+            var defer = Q.defer<void>();
+            defer.reject('The artifact type is not yet supported: ' + artifactDefinition.artifactType);
+            return defer.promise;
         }
     }
 }

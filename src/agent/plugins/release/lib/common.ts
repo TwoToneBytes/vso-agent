@@ -6,6 +6,7 @@ releaseVars.systemArtifactsDirectory = 'system.artifactsDirectory';
 releaseVars.skipArtifactsDownload = 'release.skipartifactsDownload';
 releaseVars.releaseId = 'release.releaseId';
 releaseVars.buildId = 'build.buildId';
+releaseVars.releaseDefinitionName = 'release.definitionName';
 
 export function reviver(key, val) {
     if (key) {
